@@ -59,10 +59,9 @@ class BasePokerPlayer(object):
 
         try:
             with timeout(5):
-                print("===decalre called===")
                 action, amount = self.declare_action(valid_actions, hole_card, round_state)
-        except:
-            print("===exception===")
+        except Exception as e:
+            print(e)
             action, amount = valid_actions[0]["action"], valid_actions[0]["amount"]
         return action, amount
 
