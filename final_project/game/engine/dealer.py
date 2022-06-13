@@ -222,7 +222,6 @@ class MessageHandler:
     def process_message(self, address, msg):
         receivers = self.__fetch_receivers(address)
         for receiver in receivers:
-            print(type(receiver))
             if msg["type"] == "ask":
                 return receiver.respond_to_ask(msg["message"])
             elif msg["type"] == "notification":
