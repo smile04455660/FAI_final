@@ -26,7 +26,6 @@ class RLModel(nn.Module):
         self.saved_actions = []
         self.rewards = []
 
-
     def forward(self, x):
         x = F.relu(self.affine(x))
         action_prob = F.softmax(self.action_head(x), dim=0)
@@ -42,6 +41,7 @@ class MyPlayer(BasePokerPlayer):
         self.model = RLModel()
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=3e-2)
         self.eps = np.finfo(np.float32).eps.item()
+        self.gamma = 0.99
 
     def set_action_ratio(self, fold_ratio, call_ratio, raise_ratio):
         ratio = [fold_ratio, call_ratio, raise_ratio]
@@ -91,11 +91,13 @@ class MyPlayer(BasePokerPlayer):
         return suit, rank
 
     def declare_action(self, valid_actions, hole_card, round_state):
-        state = self._encode_actor_inputs(valid_actions, hole_card, round_state)
+        state = self._encode_actor_inputs(
+            valid_actions, hole_card, round_state)
         probs, state_value = self.model(state)
         m = Categorical(probs)
         action = m.sample()
-        self.model.saved_actions.append(SavedAction(m.log_prob(action), state_value))
+        self.model.saved_actions.append(
+            SavedAction(m.log_prob(action), state_value))
         choice = valid_actions[action]
         action = choice["action"]
         amount = choice["amount"]
@@ -103,24 +105,73 @@ class MyPlayer(BasePokerPlayer):
             portion = torch.sigmoid(state_value).item()
             mini, maxi = amount["min"], amount["max"]
             amount = portion * (maxi - mini) + mini
-        
+
         return action, amount
 
-
     def receive_game_start_message(self, game_info):
-        pass
+        print("===game start===")
+        print("game_info: ", json.dumps(game_info))
+        self.game_initial_stack = game_info['rule']['initial_stack']
 
     def receive_round_start_message(self, round_count, hole_card, seats):
-        pass
+        return
+        print("===round start===")
+        print("round_count: ", json.dumps(round_count))
+        print("hole_card: ", json.dumps(hole_card))
+        print("seats: ", json.dumps(seats))
+
+    def _get_stack_from_seats(self, seats):
+        return [seat['stack'] for seat in seats if seat['uuid'] == self.uuid][0]
 
     def receive_street_start_message(self, street, round_state):
-        pass
+        return
+        print("===street start===")
+        print("street: ", json.dumps(street))
+        print("round_state: ", json.dumps(round_state))
+        self.street_initial_stack = self._get_stack_from_seats(
+            round_state['seats'])
 
     def receive_game_update_message(self, new_action, round_state):
-        pass
+        print("===game update===")
+        print("new_action: ", json.dumps(new_action))
+        print("round_state: ", json.dumps(round_state))
+        if new_action['player_uuid'] == self.uuid:
+            reward = -new_action['amount']
+            self.model.rewards.append(reward)
 
     def receive_round_result_message(self, winners, hand_info, round_state):
-        pass
+        # print("===round result===")
+        # print("winners: ", json.dumps(winners))
+        # print("hand_info: ", json.dumps(hand_info))
+        # print("round_state: ", json.dumps(round_state))
+        
+        # training code
+        R = 0
+        saved_actions = self.model.saved_actions
+        policy_losses = []
+        value_losses = []
+        returns = []
+
+        for r in self.model.rewards[::-1]:
+            R = r + self.gamma * R
+            returns.insert(0, R)
+
+        returns = torch.tensor(returns)
+        returns = (returns - returns.mean()) / (returns.std() + self.eps)
+
+        for (log_prob, value), R in zip(saved_actions, returns):
+            advantage = R - value.item()
+            policy_losses.append(-log_prob * advantage)
+            value_losses.append(F.smooth_l1_loss(value, torch.tensor([R])))
+
+        if len(policy_losses) > 0:
+            self.optimizer.zero_grad()
+            loss = torch.stack(policy_losses).sum() + torch.stack(value_losses).sum()
+            loss.backward()
+            self.optimizer.step()
+
+            del self.model.rewards[:]
+            del self.model.saved_actions[:]
 
 
 def setup_ai():
