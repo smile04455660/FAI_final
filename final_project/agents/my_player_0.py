@@ -1,3 +1,5 @@
+
+
 import json
 import numpy as np
 
@@ -19,9 +21,9 @@ SavedAction = namedtuple('SavedAction', ['log_prob', 'value'])
 class RLModel(nn.Module):
     def __init__(self):
         super(RLModel, self).__init__()
-        self.affine = nn.Linear(23, 128)
-        self.action_head = nn.Linear(128, 3)
-        self.value_head = nn.Linear(128, 1)
+        self.affine = nn.Linear(23, 256)
+        self.action_head = nn.Linear(256, 3)
+        self.value_head = nn.Linear(256, 1)
 
         self.saved_actions = []
         self.rewards = []
@@ -39,7 +41,10 @@ class MyPlayer(BasePokerPlayer):
         self.fold_ratio = self.call_ratio = raise_ratio = 1.0 / 3
 
         self.model = RLModel()
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=3e-2)
+        import os
+        if os.path.exists("model_0.ckpt"):
+            self.model.load_state_dict(torch.load("model_0.ckpt"))
+        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=3e-3)
         self.eps = np.finfo(np.float32).eps.item()
         self.gamma = 0.99
 
@@ -105,19 +110,21 @@ class MyPlayer(BasePokerPlayer):
             portion = torch.sigmoid(state_value).item()
             mini, maxi = amount["min"], amount["max"]
             amount = portion * (maxi - mini) + mini
+        print("===declartation===")
+        print(f"(probs, value):  ({probs.detach().numpy()}, {state_value.item()})")
 
         return action, amount
 
     def receive_game_start_message(self, game_info):
-        print("===game start===")
-        print("game_info: ", json.dumps(game_info))
+        # print("===game start===")
+        # print("game_info: ", json.dumps(game_info))
         self.game_initial_stack = game_info['rule']['initial_stack']
 
     def receive_round_start_message(self, round_count, hole_card, seats):
-        return
+        self.round_count = round_count
         print("===round start===")
-        print("round_count: ", json.dumps(round_count))
-        print("hole_card: ", json.dumps(hole_card))
+        # print("round_count: ", json.dumps(round_count))
+        # print("hole_card: ", json.dumps(hole_card))
         print("seats: ", json.dumps(seats))
 
     def _get_stack_from_seats(self, seats):
@@ -132,15 +139,16 @@ class MyPlayer(BasePokerPlayer):
             round_state['seats'])
 
     def receive_game_update_message(self, new_action, round_state):
+        self.pot_amount = round_state["pot"]["main"]["amount"]
         print("===game update===")
-        print("new_action: ", json.dumps(new_action))
-        print("round_state: ", json.dumps(round_state))
+        # print("new_action: ", json.dumps(new_action))
+        # print("round_state: ", json.dumps(round_state))
         if new_action['player_uuid'] == self.uuid:
             reward = -new_action['amount']
             self.model.rewards.append(reward)
 
     def receive_round_result_message(self, winners, hand_info, round_state):
-        # print("===round result===")
+        print("===round result===")
         # print("winners: ", json.dumps(winners))
         # print("hand_info: ", json.dumps(hand_info))
         # print("round_state: ", json.dumps(round_state))
@@ -152,23 +160,35 @@ class MyPlayer(BasePokerPlayer):
         value_losses = []
         returns = []
 
+        if len(self.model.rewards) > 0:
+            final_reward = (1 if winners[0]["uuid"] == self.uuid else -1) * self.pot_amount
+            print("final_reward", final_reward)
+            self.model.rewards[-1] += final_reward
+
         for r in self.model.rewards[::-1]:
+            print('r:', r)
             R = r + self.gamma * R
             returns.insert(0, R)
 
         returns = torch.tensor(returns)
-        returns = (returns - returns.mean()) / (returns.std() + self.eps)
+        # print("ret_b:", returns)
+        if len(returns) > 1:
+            returns = (returns - returns.mean()) / (returns.std() + self.eps)
+        # print("sa:", saved_actions)
+        # print("ret:", returns)
 
-        for (log_prob, value), R in zip(saved_actions, returns):
-            advantage = R - value.item()
-            policy_losses.append(-log_prob * advantage)
-            value_losses.append(F.smooth_l1_loss(value, torch.tensor([R])))
-
-        if len(policy_losses) > 0:
+            for (log_prob, value), R in zip(saved_actions, returns):
+                advantage = R - value.item()
+                policy_losses.append(-log_prob * advantage)
+                value_losses.append(F.smooth_l1_loss(value, torch.tensor([R])))
+    
             self.optimizer.zero_grad()
             loss = torch.stack(policy_losses).sum() + torch.stack(value_losses).sum()
             loss.backward()
             self.optimizer.step()
+
+            if self.round_count % 5 == 4:
+                torch.save(self.model.state_dict(), "model_0.ckpt")
 
             del self.model.rewards[:]
             del self.model.saved_actions[:]

@@ -3,7 +3,7 @@ from game.game import setup_config, start_poker
 from agents.call_player import setup_ai as call_ai
 from agents.random_player import setup_ai as random_ai
 from agents.console_player import setup_ai as console_ai
-from agents.my_player import setup_ai as my_ai
+from agents.my_player_1 import setup_ai as my_ai
 
 # from baseline0 import setup_ai as baseline0_ai
 
